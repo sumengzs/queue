@@ -16,13 +16,20 @@ limitations under the License.
 
 package queue
 
-var _ Interface = &CircularQueue{}
-
 type CircularQueue struct {
 	items  []interface{}
 	size   int
 	len    int
 	offset int
+}
+
+func NewCircularQueue(size int) *CircularQueue {
+	return &CircularQueue{
+		items:  make([]interface{}, size),
+		size:   size,
+		len:    0,
+		offset: 0,
+	}
 }
 
 func (q *CircularQueue) Len() int {
@@ -44,10 +51,10 @@ func (q *CircularQueue) Get() interface{} {
 }
 
 func (q *CircularQueue) GetPoint(point int) interface{} {
-	if q.len == 0 || q.len < point || q.size < point || point < 1 {
+	if q.len == 0 || q.len <= point || q.size <= point || point < 0 {
 		return nil
 	}
-	point = (q.offset + q.size - point) % q.size
+	point = (q.offset + q.size - point - 1) % q.size
 	return q.items[point]
 }
 
@@ -82,13 +89,4 @@ func (q *CircularQueue) Put(item interface{}) {
 		q.len++
 	}
 	q.offset = (q.offset + 1) % q.size
-}
-
-func NewCircularQueue(size int) *CircularQueue {
-	q := new(CircularQueue)
-	q.size = size
-	q.offset = 0
-	q.len = 0
-	q.items = make([]interface{}, size)
-	return q
 }
