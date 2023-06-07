@@ -228,7 +228,7 @@ func TestCircularQueue_Len(t *testing.T) {
 	tests := []struct {
 		name  string
 		queue *CircularQueue
-		want  uint32
+		want  int
 	}{
 		{
 			name:  "queue nodata",
@@ -261,6 +261,43 @@ func TestCircularQueue_Len(t *testing.T) {
 	}
 }
 
+// 测试 AtomicPut 方法在并发情况下是否协程安全
+func TestCircularQueue_AtomicPutConcurrent(t *testing.T) {
+	numGoroutines := 1000
+	q := NewCircularQueue(uint32(numGoroutines * numGoroutines))
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		// 分协程写入数据
+		go func(i int) {
+			defer wg.Done()
+
+			for j := i * numGoroutines; j < i*numGoroutines+numGoroutines; j++ {
+				q.AtomicPut(j)
+			}
+		}(i)
+	}
+
+	// 等待所有 goroutine 完成
+	wg.Wait()
+	actLen := q.Len()
+	expLen := numGoroutines * numGoroutines
+	if actLen != expLen {
+		t.Errorf("actLen=%d expLen=%d", actLen, expLen)
+	}
+	data := q.GetAll()
+	sort.Slice(data, func(i, j int) bool {
+		return data[i].(int) < data[j].(int)
+	})
+	for i := range data {
+		if i != data[i].(int) {
+			t.Errorf("want=%d act:=%d", i, data[i])
+		}
+	}
+}
+
 func BenchmarkTestPut(b *testing.B) {
 	b.ResetTimer()
 	queue := NewCircularQueue(1024)
@@ -269,12 +306,32 @@ func BenchmarkTestPut(b *testing.B) {
 	}
 }
 
-func BenchmarkTestSafePut(b *testing.B) {
+func BenchmarkTestAtomicPut(b *testing.B) {
 	b.ResetTimer()
 	queue := NewCircularQueue(1024)
 	for i := 0; i < b.N; i++ {
-		queue.SafePut(i)
+		queue.AtomicPut(i)
 	}
+}
+
+func BenchmarkTestMutexPut(b *testing.B) {
+	b.ResetTimer()
+	queue := NewCircularQueue(1024)
+	for i := 0; i < b.N; i++ {
+		queue.MutexPut(i)
+	}
+}
+
+func BenchmarkTestAtomicPutConcurrent(b *testing.B) {
+	queueSize := uint32(1000)
+	queue := NewCircularQueue(queueSize)
+	PutHelper(b, queue.AtomicPut)
+}
+
+func BenchmarkTestMutexPutConcurrent(b *testing.B) {
+	queueSize := uint32(1000)
+	queue := NewCircularQueue(queueSize)
+	PutHelper(b, queue.MutexPut)
 }
 
 func BenchmarkTestGet(b *testing.B) {
@@ -283,6 +340,33 @@ func BenchmarkTestGet(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		queue.Get()
+	}
+}
+
+func BenchmarkTestAtomicGet(b *testing.B) {
+	queue := prepareCircularQueue(1024, 1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		queue.AtomicGet()
+	}
+}
+
+func BenchmarkTestMutexGet(b *testing.B) {
+	queue := prepareCircularQueue(1024, 1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		queue.MutexGet()
+	}
+}
+
+func BenchmarkTestGets(b *testing.B) {
+	queue := prepareCircularQueue(1024, 1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		queue.Gets(uint32(i) % 1024)
 	}
 }
 
@@ -295,47 +379,24 @@ func BenchmarkTestGetAll(b *testing.B) {
 	}
 }
 
-func BenchmarkTestGets(b *testing.B) {
-	b.ReportAllocs()
-	queue := prepareCircularQueue(1024, 1024)
-
+func PutHelper(b *testing.B, fn func(interface{})) {
+	numWorkers := 100
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		queue.Gets(uint32(i) % 1024)
-	}
-}
-
-func TestCircularQueue_SafePutConcurrent(t *testing.T) {
-	numGoroutines := 1000
-	q := NewCircularQueue(uint32(numGoroutines * numGoroutines))
 
 	var wg sync.WaitGroup
-	wg.Add(numGoroutines)
+	wg.Add(numWorkers)
 
-	for i := 0; i < numGoroutines; i++ {
-		go func(i int) {
+	for i := 0; i < numWorkers; i++ {
+		go func() {
 			defer wg.Done()
 
-			for j := i * numGoroutines; j < i*numGoroutines+numGoroutines; j++ {
-				q.SafePut(j)
+			for j := 0; j < b.N/numWorkers; j++ {
+				item := j
+				fn(item)
 			}
-		}(i)
+		}()
 	}
 
-	// 等待所有 goroutine 完成
 	wg.Wait()
-	actLen := q.Len()
-	expLen := numGoroutines * numGoroutines
-	if actLen != uint32(expLen) {
-		t.Errorf("actLen=%d expLen=%d", actLen, expLen)
-	}
-	data := q.GetAll()
-	sort.Slice(data, func(i, j int) bool {
-		return data[i].(int) < data[j].(int)
-	})
-	for i := range data {
-		if i != data[i].(int) {
-			t.Errorf("want=%d act:=%d", i, data[i])
-		}
-	}
+	b.StopTimer()
 }

@@ -18,10 +18,12 @@ package queue
 
 import (
 	"runtime"
+	"sync"
 	"sync/atomic"
 )
 
 type CircularQueue struct {
+	mu     sync.RWMutex
 	items  []interface{}
 	size   uint32
 	len    uint32
@@ -37,12 +39,12 @@ func NewCircularQueue(size uint32) *CircularQueue {
 	}
 }
 
-func (q *CircularQueue) Len() uint32 {
-	return q.len
+func (q *CircularQueue) Len() int {
+	return int(atomic.LoadUint32(&q.len))
 }
 
-func (q *CircularQueue) Cap() uint32 {
-	return q.size
+func (q *CircularQueue) Cap() int {
+	return int(q.size)
 }
 
 func (q *CircularQueue) Get() interface{} {
@@ -71,8 +73,7 @@ func (q *CircularQueue) Gets(size uint32) []interface{} {
 		size = q.len
 	}
 	data := q.GetAll()
-	data = data[uint32(len(data))-size:]
-	return data
+	return data[(len(data))-int(size):]
 }
 
 func (q *CircularQueue) GetAll() []interface{} {
@@ -96,11 +97,27 @@ func (q *CircularQueue) Put(item interface{}) {
 	q.offset = (q.offset + 1) % q.size
 }
 
-func (q *CircularQueue) SafePut(item interface{}) {
-	var offset, newOffset uint32
+// AtomicGet 原子读取
+// 需要注意的是，AtomicGet 方法只保证了对偏移量的原子读取，而不保证对元素本身的读取过程中的并发安全性。
+// 如果在同一时间段内有其他协程在往队列中放入或取出元素，那么使用原子操作读取元素时仍然可能会遇到并发访问的问题。
+// 如果需要保证绝对的准确性，建议配合使用 LockGet 与 LockPut。
+func (q *CircularQueue) AtomicGet() interface{} {
+	offset := atomic.LoadUint32(&q.offset)
+	if q.len == 0 {
+		return nil
+	}
+	if offset == 0 {
+		return q.items[q.size-1]
+	}
+	return q.items[offset-1]
+}
+
+// AtomicPut 使用 atomic.CompareAndSwapUint32 保证了对偏移量的原子读取与操作，继而保证该偏移位置只能用此次操作赋值。
+// 经过测试，是协程安全的。
+func (q *CircularQueue) AtomicPut(item interface{}) {
+	offset := atomic.LoadUint32(&q.offset)
+	newOffset := (offset + 1) % q.size
 	for {
-		offset = q.offset
-		newOffset = (offset + 1) % q.size
 		if atomic.CompareAndSwapUint32(&q.offset, offset, newOffset) {
 			if q.len < q.size {
 				atomic.AddUint32(&q.len, 1)
@@ -108,7 +125,21 @@ func (q *CircularQueue) SafePut(item interface{}) {
 			q.items[offset] = item
 			break
 		} else {
+			offset = atomic.LoadUint32(&q.offset)
+			newOffset = (offset + 1) % q.size
 			runtime.Gosched()
 		}
 	}
+}
+
+func (q *CircularQueue) MutexPut(item interface{}) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.Put(item)
+}
+
+func (q *CircularQueue) MutexGet() interface{} {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.Get()
 }
