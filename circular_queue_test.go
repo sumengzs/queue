@@ -17,12 +17,14 @@ limitations under the License.
 package queue
 
 import (
+	"sort"
+	"sync"
 	"testing"
 )
 
-func prepareCircularQueue(size int, length int) *CircularQueue {
+func prepareCircularQueue(size uint32, length uint32) *CircularQueue {
 	queue := NewCircularQueue(size)
-	for i := 0; i < length; i++ {
+	for i := 0; i < int(length); i++ {
 		queue.Put(i)
 	}
 	return queue
@@ -34,7 +36,7 @@ func prepareCircularQueue(size int, length int) *CircularQueue {
 // (5:0] [4,3,2,1,0]
 func prepareWantData(start, end int) []interface{} {
 	data := make([]interface{}, 0)
-	if start < end {
+	if start <= end {
 		for i := start; i < end; i++ {
 			data = append(data, i)
 		}
@@ -136,7 +138,7 @@ func TestCircularQueue_GetPoint(t *testing.T) {
 	tests := []struct {
 		name  string
 		queue *CircularQueue
-		args  int
+		args  uint32
 		want  interface{}
 	}{
 		{
@@ -178,7 +180,7 @@ func TestCircularQueue_Gets(t *testing.T) {
 	tests := []struct {
 		name  string
 		queue *CircularQueue
-		args  int
+		args  uint32
 		want  []interface{}
 	}{
 		{
@@ -226,7 +228,7 @@ func TestCircularQueue_Len(t *testing.T) {
 	tests := []struct {
 		name  string
 		queue *CircularQueue
-		want  int
+		want  uint32
 	}{
 		{
 			name:  "queue nodata",
@@ -260,15 +262,22 @@ func TestCircularQueue_Len(t *testing.T) {
 }
 
 func BenchmarkTestPut(b *testing.B) {
-	b.ReportAllocs()
 	b.ResetTimer()
 	queue := NewCircularQueue(1024)
 	for i := 0; i < b.N; i++ {
 		queue.Put(i)
 	}
 }
+
+func BenchmarkTestSafePut(b *testing.B) {
+	b.ResetTimer()
+	queue := NewCircularQueue(1024)
+	for i := 0; i < b.N; i++ {
+		queue.SafePut(i)
+	}
+}
+
 func BenchmarkTestGet(b *testing.B) {
-	b.ReportAllocs()
 	queue := prepareCircularQueue(1024, 1024)
 
 	b.ResetTimer()
@@ -278,7 +287,6 @@ func BenchmarkTestGet(b *testing.B) {
 }
 
 func BenchmarkTestGetAll(b *testing.B) {
-	b.ReportAllocs()
 	queue := prepareCircularQueue(1024, 1024)
 
 	b.ResetTimer()
@@ -293,6 +301,41 @@ func BenchmarkTestGets(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		queue.Gets(i % 1024)
+		queue.Gets(uint32(i) % 1024)
+	}
+}
+
+func TestCircularQueue_SafePutConcurrent(t *testing.T) {
+	numGoroutines := 1000
+	q := NewCircularQueue(uint32(numGoroutines * numGoroutines))
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+
+			for j := i * numGoroutines; j < i*numGoroutines+numGoroutines; j++ {
+				q.SafePut(j)
+			}
+		}(i)
+	}
+
+	// 等待所有 goroutine 完成
+	wg.Wait()
+	actLen := q.Len()
+	expLen := numGoroutines * numGoroutines
+	if actLen != uint32(expLen) {
+		t.Errorf("actLen=%d expLen=%d", actLen, expLen)
+	}
+	data := q.GetAll()
+	sort.Slice(data, func(i, j int) bool {
+		return data[i].(int) < data[j].(int)
+	})
+	for i := range data {
+		if i != data[i].(int) {
+			t.Errorf("want=%d act:=%d", i, data[i])
+		}
 	}
 }

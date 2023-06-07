@@ -16,14 +16,19 @@ limitations under the License.
 
 package queue
 
+import (
+	"runtime"
+	"sync/atomic"
+)
+
 type CircularQueue struct {
 	items  []interface{}
-	size   int
-	len    int
-	offset int
+	size   uint32
+	len    uint32
+	offset uint32
 }
 
-func NewCircularQueue(size int) *CircularQueue {
+func NewCircularQueue(size uint32) *CircularQueue {
 	return &CircularQueue{
 		items:  make([]interface{}, size),
 		size:   size,
@@ -32,11 +37,11 @@ func NewCircularQueue(size int) *CircularQueue {
 	}
 }
 
-func (q *CircularQueue) Len() int {
+func (q *CircularQueue) Len() uint32 {
 	return q.len
 }
 
-func (q *CircularQueue) Cap() int {
+func (q *CircularQueue) Cap() uint32 {
 	return q.size
 }
 
@@ -50,7 +55,7 @@ func (q *CircularQueue) Get() interface{} {
 	return q.items[q.offset-1]
 }
 
-func (q *CircularQueue) GetPoint(point int) interface{} {
+func (q *CircularQueue) GetPoint(point uint32) interface{} {
 	if q.len == 0 || q.len <= point || q.size <= point || point < 0 {
 		return nil
 	}
@@ -58,7 +63,7 @@ func (q *CircularQueue) GetPoint(point int) interface{} {
 	return q.items[point]
 }
 
-func (q *CircularQueue) Gets(size int) []interface{} {
+func (q *CircularQueue) Gets(size uint32) []interface{} {
 	if q.len == 0 {
 		return nil
 	}
@@ -66,7 +71,7 @@ func (q *CircularQueue) Gets(size int) []interface{} {
 		size = q.len
 	}
 	data := q.GetAll()
-	data = data[len(data)-size:]
+	data = data[uint32(len(data))-size:]
 	return data
 }
 
@@ -89,4 +94,21 @@ func (q *CircularQueue) Put(item interface{}) {
 		q.len++
 	}
 	q.offset = (q.offset + 1) % q.size
+}
+
+func (q *CircularQueue) SafePut(item interface{}) {
+	var offset, newOffset uint32
+	for {
+		offset = q.offset
+		newOffset = (offset + 1) % q.size
+		if atomic.CompareAndSwapUint32(&q.offset, offset, newOffset) {
+			if q.len < q.size {
+				atomic.AddUint32(&q.len, 1)
+			}
+			q.items[offset] = item
+			break
+		} else {
+			runtime.Gosched()
+		}
+	}
 }
